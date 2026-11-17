@@ -1,0 +1,176 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><meta name="referrer" content="no-referrer">
+<title>Recipe</title>
+<style>
+@font-face{font-family:'Instrument Serif';src:url(InstrumentSerif-Regular.ttf) format('truetype');font-display:swap}
+:root{--bg:#f5f3ee;--card:#fff;--ink:#1c1a17;--body:#3a3631;--mute:#6b665d;--rule:#dcd6c9;--accent:#5b4bd6;--warm:#a8481c}
+@media (prefers-color-scheme:dark){:root{--bg:#121110;--card:#1c1b19;--ink:#f0ece4;--body:#d6d0c4;--mute:#a39d90;--rule:#2d2a25;--accent:#9b8dff;--warm:#e8935f}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--body);font:17px/1.5 -apple-system,system-ui,sans-serif;-webkit-text-size-adjust:100%}
+main{max-width:680px;margin:0 auto;padding:28px 20px 90px}
+.kicker{color:var(--mute);font-size:14px}h1{font:400 40px/1.08 'Instrument Serif','Iowan Old Style',Georgia,serif;color:var(--ink);margin:4px 0 6px;letter-spacing:-.4px}
+.meta{color:var(--mute);font-size:15px}.notice{background:var(--card);border:1px solid var(--rule);border-radius:14px;padding:12px 14px;font-size:14px;margin:16px 0 0}
+h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--mute);font-weight:600;margin:34px 0 4px}
+h3{font:400 19px 'Instrument Serif',Georgia,serif;color:var(--ink);margin:18px 0 2px}
+.item{border-top:1px solid var(--rule)}.row{display:flex;gap:12px;align-items:flex-start;padding:12px 0;cursor:pointer}
+.row input{position:absolute;opacity:0}
+.ring{flex:none;width:22px;height:22px;border:1.8px solid var(--mute);border-radius:50%;margin-top:2px}
+input:checked+.ring{background:var(--accent);border-color:var(--accent);box-shadow:inset 0 0 0 4px var(--bg)}
+input:checked+.ring+.txt{color:var(--mute);text-decoration:line-through}
+input:focus-visible+.ring{outline:2px solid var(--accent);outline-offset:2px}
+.n{flex:none;width:18px;text-align:right;color:var(--mute);font-size:13px;margin-top:4px}
+.timers{display:flex;flex-wrap:wrap;gap:8px;margin:-4px 0 12px 64px}
+.timer{font:inherit;font-size:15px;font-variant-numeric:tabular-nums;color:var(--accent);background:var(--card);border:1px solid var(--rule);border-radius:99px;padding:6px 14px;cursor:pointer;min-height:36px}
+.timer.on{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+.timer.done{border-color:var(--warm);color:var(--warm)}
+.src,.foot{color:var(--mute);font-size:14px;margin-top:18px}a{color:var(--accent)}
+.bar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:18px;color:var(--mute);font-size:14px}
+.btn{font:inherit;font-size:14px;color:var(--accent);background:none;border:1px solid var(--rule);border-radius:99px;padding:6px 14px;cursor:pointer}
+.btn[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+#alert{position:fixed;left:12px;right:12px;bottom:12px;max-width:656px;margin:0 auto;background:var(--ink);color:var(--bg);border-radius:16px;padding:14px 16px;display:none;align-items:center;justify-content:space-between;gap:12px;font-size:17px;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+#alert.show{display:flex}#alert button{font:inherit;background:var(--bg);color:var(--ink);border:0;border-radius:99px;padding:6px 14px}
+</style></head><body><main id="app"><p class="meta" id="msg">Opening recipe…</p></main>
+<div id="alert" role="alert"><span id="alertText"></span><button id="alertOk">OK</button></div>
+<script>
+(function () {
+  var app = document.getElementById('app'), msg = document.getElementById('msg');
+  // #msg sits inside #app, which render() clears: put it back so a failure is always shown.
+  function fail(t) { app.textContent = ''; msg.textContent = t; app.appendChild(msg); }
+  function b64(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; var b = atob(s), a = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
+  function inflate(bytes) {
+    var ds = new DecompressionStream('deflate-raw'), w = ds.writable.getWriter(); w.write(bytes); w.close();
+    return new Response(ds.readable).arrayBuffer();
+  }
+  function decode(h) {
+    if (!h) return Promise.reject();
+    var kind = h.charAt(0), bytes = b64(h.slice(1));
+    if (kind === 'j') return Promise.resolve(JSON.parse(new TextDecoder().decode(bytes)));
+    if (kind === 'z') { if (!window.DecompressionStream) return Promise.reject('old'); return inflate(bytes).then(function (buf) { return JSON.parse(new TextDecoder().decode(buf)); }); }
+    return Promise.reject();
+  }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  // The app's Recipe.servingsText: a bare number gets "serving(s)", anything else ("4 servings", "Makes 12") shows as written.
+  function servings(s) { var t = String(s).trim(); if (/^[+-]?\d+$/.test(t)) { var n = parseInt(t, 10); return n === 1 ? '1 serving' : n + ' servings'; } return t; }
+  // A link the app made always has this shape; a cut or edited one may not, and gets the incomplete-link message, not half a page.
+  function rows(x) { return Array.isArray(x) && x.every(Array.isArray); }
+  function valid(d) {
+    return !!d && typeof d === 'object' && rows(d.i) && rows(d.p)
+      && d.p.every(function (s) { return s[2] == null || rows(s[2]); });
+  }
+  function fmt(s) { s = Math.max(0, Math.round(s)); var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60; return (h ? h + ':' + (m < 10 ? '0' : '') + m : m) + ':' + (r < 10 ? '0' : '') + r; }
+
+  var hash = location.hash.slice(1), key = 'mm:' + hash.slice(0, 64) + hash.length, ticks = {};
+  try { ticks = JSON.parse(localStorage.getItem(key) || '{}'); } catch (e) {}
+  function saveTicks() { try { localStorage.setItem(key, JSON.stringify(ticks)); } catch (e) {} }
+
+  // Alerts: a beep, a vibration, a banner. Timers use the clock, so they stay right even if the tab was in the background.
+  var ctx, alertEl = document.getElementById('alert'), alertText = document.getElementById('alertText');
+  function beep(n) {
+    try {
+      ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+      for (var i = 0; i < n; i++) { var o = ctx.createOscillator(), g = ctx.createGain(); o.frequency.value = 880; o.connect(g); g.connect(ctx.destination); var t = ctx.currentTime + i * .35; g.gain.setValueAtTime(.25, t); g.gain.exponentialRampToValueAtTime(.001, t + .25); o.start(t); o.stop(t + .27); }
+    } catch (e) {}
+    try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (e) {}
+  }
+  function say(t, n) { alertText.textContent = t; alertEl.classList.add('show'); beep(n); }
+  document.getElementById('alertOk').onclick = function () { alertEl.classList.remove('show'); };
+
+  var running = [];
+  function startTimer(btn, tm, label) {
+    var r = running.filter(function (x) { return x.btn === btn; })[0];
+    if (r) { clearInterval(r.iv); running.splice(running.indexOf(r), 1); btn.className = 'timer'; btn.textContent = label; return; }
+    try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume(); } catch (e) {}   // unlocked by this tap
+    var end = Date.now() + tm.s * 1000, cued = false, item = { btn: btn };
+    btn.className = 'timer on';
+    item.iv = setInterval(function () {
+      var left = (end - Date.now()) / 1000;
+      if (tm.c && !cued && tm.s - left >= tm.c) { cued = true; say((tm.x || 'Halfway!') + ' (' + (tm.l || 'timer') + ')', 2); }
+      if (left <= 0) { clearInterval(item.iv); running.splice(running.indexOf(item), 1); btn.className = 'timer done'; btn.textContent = label + ' · done'; say((tm.l ? tm.l + ': ' : '') + 'time is up', 4); return; }
+      btn.textContent = fmt(left) + ' · tap to stop';
+    }, 250);
+    running.push(item);
+  }
+
+  function render(d) {
+    if (!valid(d)) throw 0;
+    document.title = String(d.t || 'Recipe');
+    app.textContent = '';
+    app.appendChild(el('div', 'kicker', 'Recipe'));
+    app.appendChild(el('h1', '', String(d.t || 'Recipe')));
+    var facts = [];
+    if (d.s) { var sv = servings(d.s); if (sv) facts.push(sv); }
+    if (d.m) facts.push(d.m >= 60 ? Math.floor(d.m / 60) + ' h' + (d.m % 60 ? ' ' + d.m % 60 + ' min' : '') : d.m + ' min');
+    var nt = (d.p || []).reduce(function (a, s) { return a + (s[2] || []).length; }, 0);
+    if (nt) facts.push(nt === 1 ? '1 timer' : nt + ' timers');
+    if (facts.length) app.appendChild(el('div', 'meta', facts.join(' · ')));
+    if (d.d) app.appendChild(el('p', 'notice', 'The steps were suggested by AI and can be wrong. Check the times and temperatures and use your own judgment.'));
+    if (typeof d.u === 'string' && /^https:\/\//i.test(d.u)) { var p = el('p', 'src', 'From '), a = el('a', '', ''); try { a.textContent = new URL(d.u).host; } catch (e) { a.textContent = d.u; } a.href = d.u; a.rel = 'noopener noreferrer'; p.appendChild(a); app.appendChild(p); }
+
+    var bar = el('div', 'bar'); bar.appendChild(el('span', '', 'Tap to tick things off.'));
+    var side = el('span'); var wake = el('button', 'btn', 'Keep screen on'); wake.setAttribute('aria-pressed', 'false');
+    var clear = el('button', 'btn', 'Clear ticks'); clear.style.marginLeft = '8px'; side.appendChild(wake); side.appendChild(clear); bar.appendChild(side); app.appendChild(bar);
+
+    function section(title, rows, step) {
+      if (!rows.length) return;
+      app.appendChild(el('h2', '', title));
+      var last = null;
+      rows.forEach(function (r, i) {
+        var sec = r[1];
+        if (sec && sec !== last) app.appendChild(el('h3', '', sec));
+        last = sec;
+        // The label holds only the number, the box and the words (they name the checkbox); timer buttons sit after it.
+        var item = el('div', 'item'), lab = el('label', 'row' + (step ? ' step' : '')), k = (step ? 's' : 'i') + i;
+        if (step) lab.appendChild(el('span', 'n', String(i + 1)));
+        var cb = el('input'); cb.type = 'checkbox'; cb.checked = !!ticks[k];
+        cb.onchange = function () { ticks[k] = cb.checked; saveTicks(); };
+        lab.appendChild(cb); lab.appendChild(el('span', 'ring'));
+        var txt = el('span', 'txt'); txt.appendChild(document.createTextNode(String(r[0] == null ? '' : r[0])));
+        lab.appendChild(txt); item.appendChild(lab);
+        var tms = step ? (r[2] || []) : [];
+        if (tms.length) {
+          var box = el('div', 'timers');
+          tms.forEach(function (a) {
+            var tm = { s: a[0], c: a[1], x: a[2], l: a[3] }, label = '⏱ ' + (tm.l ? tm.l + ' ' : '') + fmt(tm.s), b = el('button', 'timer', label);
+            b.type = 'button'; b.onclick = function (e) { e.preventDefault(); e.stopPropagation(); startTimer(b, tm, label); };
+            box.appendChild(b);
+          });
+          item.appendChild(box);
+        }
+        app.appendChild(item);
+      });
+    }
+    section('Ingredients', d.i || [], false);
+    section('Steps', d.p || [], true);
+    app.appendChild(el('p', 'foot', 'Shared from Unsimmer, a recipe app for iPhone and iPad. Amounts are for the servings shown. Keep this page open while a timer runs.'));
+
+    clear.onclick = function () { ticks = {}; saveTicks(); document.querySelectorAll('input[type=checkbox]').forEach(function (c) { c.checked = false; }); };
+    // wantLock is the cook's choice; lock is what the browser holds now. Browsers let go of the lock when the page is hidden,
+    // so it is asked for again on coming back, for as long as the button is on.
+    var lock = null, wantLock = false, asking = false;
+    function setPressed(on) { wake.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+    function holdScreen(fromTap) {
+      if (!wantLock || lock || asking || document.visibilityState !== 'visible') return;
+      asking = true;
+      navigator.wakeLock.request('screen').then(function (l) {
+        asking = false;
+        if (!wantLock) { l.release(); return; }
+        lock = l;
+        l.addEventListener('release', function () { if (lock === l) lock = null; });
+      }, function () {
+        asking = false;
+        if (fromTap) { wantLock = false; setPressed(false); }   // refused right away (battery saver, say): show it as off
+      });
+    }
+    wake.onclick = function () {
+      if (!navigator.wakeLock) { wake.textContent = 'Not supported here'; return; }
+      wantLock = !wantLock; setPressed(wantLock);
+      if (wantLock) holdScreen(true);
+      else if (lock) { var l = lock; lock = null; l.release(); }
+    };
+    document.addEventListener('visibilitychange', function () { holdScreen(false); });
+  }
+
+  Promise.resolve().then(function () { return decode(hash); }).then(render).catch(function (why) {
+    fail(why === 'old' ? 'This browser is too old to open this recipe. Try the latest Safari or Chrome.' : 'This recipe link is incomplete. Ask the sender to share it again.');
+  });
+})();
+</script></body></html>
